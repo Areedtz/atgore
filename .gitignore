@@ -1,2 +1,4 @@
 .todos.json
 dist/
+.todos
+.key
