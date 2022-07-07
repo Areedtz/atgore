@@ -1,71 +1,23 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 
-	"github.com/google/uuid"
 	"github.com/urfave/cli/v2"
 )
 
-type Todo struct {
-	Id          uuid.UUID `json:"id"`
-	Name        string    `json:"name"`
-	Tags        []string  `json:"tags"`
-	Description string    `json:"description"`
-	IsPriority  bool      `json:"priority"`
-	IsCompleted bool      `json:"completed"`
-}
-
-const TodoFile = ".todos.json"
-
-func Load() ([]Todo, error) {
-	jsonFile, err := os.Open(TodoFile)
-	if err != nil {
-		return nil, err
-	}
-	defer jsonFile.Close()
-
-	bytes, err := ioutil.ReadAll(jsonFile)
-	if err != nil {
-		return nil, err
-	}
-
-	var todos []Todo
-	json.Unmarshal(bytes, &todos)
-
-	return todos, nil
-}
-
-func Save(todos []Todo) error {
-	bytes, err := json.Marshal(todos)
-	if err != nil {
-		return err
-	}
-
-	return ioutil.WriteFile(TodoFile, bytes, 0644)
-}
-
-func HasTag(todo Todo, tags []string) bool {
-	for _, todoTag := range todo.Tags {
-		for _, filterTag := range tags {
-			if todoTag == filterTag {
-				return true
-			}
-		}
-	}
-
-	return false
-}
+const TodoFile = ".todos"
+const KeyFile = ".key"
 
 func main() {
 	app := &cli.App{
 		Name:                   "atgore",
 		Usage:                  "handle todos",
-		Version:                "v0.1.0",
+		Version:                "v0.2.0",
 		UseShortOptionHandling: true,
 		EnableBashCompletion:   true,
 		Commands: []*cli.Command{
@@ -79,23 +31,29 @@ func main() {
 					&cli.StringSliceFlag{Name: "tags", Aliases: []string{"t"}},
 				},
 				Action: func(ctx *cli.Context) error {
-					todos, err := Load()
+					args := ctx.Args()
+					if !args.Present() {
+						return cli.Exit("Missing arguments", 1)
+					}
+
+					todoList := &TodoList{}
+
+					err := todoList.Load()
 					if err != nil {
 						return err
 					}
 
-					newTodo := Todo{
-						uuid.New(),
-						"name",
-						ctx.StringSlice("tags"),
-						"description",
-						ctx.Bool("priority"),
-						false,
+					newTodo := &Todo{
+						Name:        strings.Join(args.Slice(), " "),
+						Tags:        ctx.StringSlice("tags"),
+						Description: ctx.String("description"),
+						IsPriority:  ctx.Bool("priority"),
+						IsCompleted: false,
 					}
 
-					todos = append(todos, newTodo)
+					todoList.Add(newTodo)
 
-					err = Save(todos)
+					err = todoList.Save()
 					if err != nil {
 						return err
 					}
@@ -108,6 +66,26 @@ func main() {
 				Aliases: []string{"rm"},
 				Usage:   "remove a task from the list",
 				Action: func(ctx *cli.Context) error {
+					args := ctx.Args()
+					if !args.Present() {
+						return cli.Exit("Missing arguments", 1)
+					}
+
+					todoList := &TodoList{}
+
+					err := todoList.Load()
+					if err != nil {
+						return err
+					}
+
+					id, err := strconv.ParseInt(ctx.Args().First(), 10, 32)
+					if err != nil {
+						return err
+					}
+
+					todoList.Remove(int(id))
+					todoList.Save()
+
 					return nil
 				},
 			},
@@ -116,6 +94,26 @@ func main() {
 				Aliases: []string{"c"},
 				Usage:   "complete a task on the list",
 				Action: func(ctx *cli.Context) error {
+					args := ctx.Args()
+					if !args.Present() {
+						return cli.Exit("Missing arguments", 1)
+					}
+
+					todoList := &TodoList{}
+
+					err := todoList.Load()
+					if err != nil {
+						return err
+					}
+
+					id, err := strconv.ParseInt(ctx.Args().First(), 10, 32)
+					if err != nil {
+						return err
+					}
+
+					todoList.Complete(int(id))
+					todoList.Save()
+
 					return nil
 				},
 			},
@@ -124,27 +122,85 @@ func main() {
 				Aliases: []string{"l"},
 				Usage:   "list tasks",
 				Flags: []cli.Flag{
-					&cli.StringSliceFlag{Name: "tags", Aliases: []string{"t"}},
+					&cli.StringFlag{Name: "tag", Aliases: []string{"t"}},
+					&cli.BoolFlag{Name: "priority", Aliases: []string{"p"}},
+					&cli.BoolFlag{Name: "completed", Aliases: []string{"c"}},
 				},
 				Action: func(ctx *cli.Context) error {
-					todos, err := Load()
+					todoList := &TodoList{}
+					err := todoList.Load()
+					if err != nil {
+						return nil
+					}
+
+					todos := todoList.Todos
+					if tag := ctx.String("tag"); tag != "" {
+						todos = todoList.FindByTag(tag)
+					}
+
+					if ctx.Bool("priority") {
+						todos = todoList.FindPriority()
+					}
+					if ctx.Bool("completed") {
+						todos = todoList.FindCompleted()
+					}
+
+					PrintTodos(todos)
+
+					return nil
+				},
+			},
+			{
+				Name: "genkey",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "password", Required: true},
+					&cli.StringFlag{Name: "email", Required: true},
+				},
+				Action: func(ctx *cli.Context) error {
+					masterKey := genMasterKey(ctx.String("password"), ctx.String("email"))
+					hkdfKey, hkdfMacKey := strechMasterKey(masterKey)
+
+					protectedSymKey, err := genProtectedSymKey(hkdfKey, hkdfMacKey)
 					if err != nil {
 						return err
 					}
 
-					n := len(todos)
-					if tags := ctx.StringSlice("tags"); tags != nil {
-						n = 0
-
-						for _, todo := range todos {
-							if HasTag(todo, tags) {
-								todos[n] = todo
-								n++
-							}
-						}
+					symkey, err := decryptProtectedSymKey(hkdfKey, hkdfMacKey, protectedSymKey)
+					if err != nil {
+						return err
 					}
 
-					fmt.Println(todos[:n])
+					fmt.Println(symkey)
+
+					err = os.WriteFile(".key", protectedSymKey, 0644)
+					if err != nil {
+						return err
+					}
+
+					return nil
+				},
+			},
+			{
+				Name: "getkey",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "password", Required: true},
+					&cli.StringFlag{Name: "email", Required: true},
+				},
+				Action: func(ctx *cli.Context) error {
+					masterKey := genMasterKey(ctx.String("password"), ctx.String("email"))
+					hkdfKey, hkdfMacKey := strechMasterKey(masterKey)
+
+					protectedSymKey, err := os.ReadFile(".key")
+					if err != nil {
+						return err
+					}
+
+					symkey, err := decryptProtectedSymKey(hkdfKey, hkdfMacKey, protectedSymKey)
+					if err != nil {
+						return err
+					}
+
+					fmt.Println(symkey)
 
 					return nil
 				},
