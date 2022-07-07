@@ -1,12 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/Songmu/prompter"
 	"github.com/urfave/cli/v2"
 )
 
@@ -17,7 +17,7 @@ func main() {
 	app := &cli.App{
 		Name:                   "atgore",
 		Usage:                  "handle todos",
-		Version:                "v0.2.0",
+		Version:                "v0.2.1",
 		UseShortOptionHandling: true,
 		EnableBashCompletion:   true,
 		Commands: []*cli.Command{
@@ -152,12 +152,17 @@ func main() {
 			},
 			{
 				Name: "genkey",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "password", Required: true},
-					&cli.StringFlag{Name: "email", Required: true},
-				},
 				Action: func(ctx *cli.Context) error {
-					masterKey := genMasterKey(ctx.String("password"), ctx.String("email"))
+					args := ctx.Args()
+					if !args.Present() {
+						return cli.Exit("Missing arguments", 1)
+					}
+
+					email := args.First()
+
+					password := prompter.Password("Enter your password")
+
+					masterKey := genMasterKey(password, email)
 					hkdfKey, hkdfMacKey := strechMasterKey(masterKey)
 
 					protectedSymKey, err := genProtectedSymKey(hkdfKey, hkdfMacKey)
@@ -165,42 +170,10 @@ func main() {
 						return err
 					}
 
-					symkey, err := decryptProtectedSymKey(hkdfKey, hkdfMacKey, protectedSymKey)
-					if err != nil {
-						return err
-					}
-
-					fmt.Println(symkey)
-
 					err = os.WriteFile(".key", protectedSymKey, 0644)
 					if err != nil {
 						return err
 					}
-
-					return nil
-				},
-			},
-			{
-				Name: "getkey",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "password", Required: true},
-					&cli.StringFlag{Name: "email", Required: true},
-				},
-				Action: func(ctx *cli.Context) error {
-					masterKey := genMasterKey(ctx.String("password"), ctx.String("email"))
-					hkdfKey, hkdfMacKey := strechMasterKey(masterKey)
-
-					protectedSymKey, err := os.ReadFile(".key")
-					if err != nil {
-						return err
-					}
-
-					symkey, err := decryptProtectedSymKey(hkdfKey, hkdfMacKey, protectedSymKey)
-					if err != nil {
-						return err
-					}
-
-					fmt.Println(symkey)
 
 					return nil
 				},
